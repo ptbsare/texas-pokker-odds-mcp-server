@@ -2,6 +2,9 @@ import random
 from collections import Counter
 from typing import List, Dict, Any, Optional, Annotated
 from pydantic import Field, ValidationError
+import multiprocessing
+import os
+import sys
 
 from mcp.server.fastmcp import FastMCP
 
@@ -114,9 +117,53 @@ def parse_card_string(card_string: str) -> List[str]:
         cards.append(rank + suit)
     return cards
 
-def calculate_odds(player1_hand_str: str, player2_hand_str: str, community_cards_str: Optional[str] = None, num_simulations: int = 10000):
+def _simulate_single_process(player1_hand: List[str], player2_hand: List[str], initial_community_cards: List[str], num_simulations_per_process: int):
     """
-    计算德州扑克两手牌的胜负平概率。
+    单个进程的模拟函数。
+    """
+    player1_wins = 0
+    player2_wins = 0
+    ties = 0
+
+    all_known_cards = set(player1_hand + player2_hand + initial_community_cards)
+
+    for _ in range(num_simulations_per_process):
+        deck = create_deck()
+        # 移除已知牌
+        for card in all_known_cards:
+            if card in deck:
+                deck.remove(card)
+
+        # 补充公共牌到5张
+        remaining_community_cards_needed = 5 - len(initial_community_cards)
+        if remaining_community_cards_needed > 0:
+            simulated_community_cards = random.sample(deck, remaining_community_cards_needed)
+        else:
+            simulated_community_cards = []
+
+        final_community_cards = initial_community_cards + simulated_community_cards
+
+        # 组合玩家手牌和公共牌
+        player1_total_cards = player1_hand + final_community_cards
+        player2_total_cards = player2_hand + final_community_cards
+
+        # 评估最佳牌型
+        player1_best_hand_rank = get_best_5_card_hand(player1_total_cards)
+        player2_best_hand_rank = get_best_5_card_hand(player2_total_cards)
+
+        # 比较胜负
+        if player1_best_hand_rank > player2_best_hand_rank:
+            player1_wins += 1
+        elif player2_best_hand_rank > player1_best_hand_rank:
+            player2_wins += 1
+        else:
+            ties += 1
+    
+    return player1_wins, player2_wins, ties
+
+def calculate_odds_core(player1_hand_str: str, player2_hand_str: str, community_cards_str: Optional[str] = None, num_simulations: int = 10000):
+    """
+    核心计算函数，不直接作为MCP工具，方便多进程调用。
     """
     try:
         player1_hand = parse_card_string(player1_hand_str)
@@ -138,52 +185,43 @@ def calculate_odds(player1_hand_str: str, player2_hand_str: str, community_cards
     except ValueError as e:
         return {"error": str(e)}
 
-    player1_wins = 0
-    player2_wins = 0
-    ties = 0
+    # 确定使用的进程数
+    num_processes = os.cpu_count() or 1 # 获取CPU核心数，如果获取不到则默认为1
+    if num_simulations < num_processes:
+        num_processes = 1 # 如果模拟次数小于核心数，则只用一个进程
 
-    for _ in range(num_simulations):
-        deck = create_deck()
-        # 移除已知牌
-        for card in all_known_cards:
-            if card in deck:
-                deck.remove(card)
+    # 计算每个进程需要执行的模拟次数
+    num_simulations_per_process = num_simulations // num_processes
+    remaining_simulations = num_simulations % num_processes
 
-        # 补充公共牌到5张
-        remaining_community_cards_needed = 5 - len(initial_community_cards)
-        if remaining_community_cards_needed > 0:
-            try:
-                simulated_community_cards = random.sample(deck, remaining_community_cards_needed)
-            except ValueError: # 如果牌不够抽，说明输入有误，或者模拟次数过多导致牌不够
-                return {"error": "牌库不足以完成模拟，请检查输入牌面是否正确或模拟次数是否过大。"}
-        else:
-            simulated_community_cards = []
+    total_player1_wins = 0
+    total_player2_wins = 0
+    total_ties = 0
 
-        final_community_cards = initial_community_cards + simulated_community_cards
+    # 使用 multiprocessing.Pool 进行并行计算
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        results = []
+        for i in range(num_processes):
+            sims_for_this_process = num_simulations_per_process
+            if i < remaining_simulations: # 将余数分配给前几个进程
+                sims_for_this_process += 1
+            
+            if sims_for_this_process > 0:
+                results.append(pool.apply_async(_simulate_single_process, (player1_hand, player2_hand, initial_community_cards, sims_for_this_process)))
+        
+        for res in results:
+            p1_wins, p2_wins, ties_count = res.get()
+            total_player1_wins += p1_wins
+            total_player2_wins += p2_wins
+            total_ties += ties_count
 
-        # 组合玩家手牌和公共牌
-        player1_total_cards = player1_hand + final_community_cards
-        player2_total_cards = player2_hand + final_community_cards
-
-        # 评估最佳牌型
-        player1_best_hand_rank = get_best_5_card_hand(player1_total_cards)
-        player2_best_hand_rank = get_best_5_card_hand(player2_total_cards)
-
-        # 比较胜负
-        if player1_best_hand_rank > player2_best_hand_rank:
-            player1_wins += 1
-        elif player2_best_hand_rank > player1_best_hand_rank:
-            player2_wins += 1
-        else:
-            ties += 1
-
-    total_results = player1_wins + player2_wins + ties
+    total_results = total_player1_wins + total_player2_wins + total_ties
     if total_results == 0: # 避免除以零
         return {"error": "模拟次数为0，无法计算概率。"}
 
-    player1_win_percentage = (player1_wins / total_results) * 100
-    player2_win_percentage = (player2_wins / total_results) * 100
-    tie_percentage = (ties / total_results) * 100
+    player1_win_percentage = (total_player1_wins / total_results) * 100
+    player2_win_percentage = (total_player2_wins / total_results) * 100
+    tie_percentage = (total_ties / total_results) * 100
 
     return {
         "player1_hand": player1_hand_str,
@@ -211,7 +249,9 @@ def calculate_poker_odds(
     """
     计算德州扑克两手牌的胜负平概率。
     """
-    return calculate_odds(player1_hand, player2_hand, community_cards, num_simulations)
+    return calculate_odds_core(player1_hand, player2_hand, community_cards, num_simulations)
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method('spawn', force=True)
+    multiprocessing.freeze_support()
     mcp.run(transport='stdio')

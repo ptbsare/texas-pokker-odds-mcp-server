@@ -7,6 +7,7 @@ This project provides a tool to calculate the win, loss, and tie probabilities f
 
 *   **Accurate Calculation**: Provides win, loss, and tie probabilities for two hands under different community card scenarios through extensive simulations, helping players make more informed decisions.
 *   **Flexible Input**: Supports inputting two hole cards, optional 3 (flop) or 4 (turn) community cards, and specifying the number of simulations.
+*   **Multi-core Optimization**: Utilizes multi-core CPUs for parallel computation, significantly increasing simulation speed, especially for a large number of simulations.
 *   **MCP Server Integration**: Encapsulates the probability calculation functionality as an MCP tool, allowing other AI agents or systems to call it via the MCP protocol.
 
 ## How to Use
@@ -30,7 +31,7 @@ uv sync
 
 ### 2. Usage as an MCP Server
 
-You can run this project as an MCP server, allowing other AI agents or systems to call the `calculate_poker_odds` tool.
+You can run this project as an MCP server, allowing other AI agents or systems to call the `calculate_poker_odds` tool via the MCP protocol.
 
 ```bash
 uv run server.py
