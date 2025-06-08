@@ -117,139 +117,156 @@ def parse_card_string(card_string: str) -> List[str]:
         cards.append(rank + suit)
     return cards
 
-def _simulate_single_process(player1_hand: List[str], player2_hand: List[str], initial_community_cards: List[str], num_simulations_per_process: int):
+def _simulate_single_process(player_hands: List[List[str]], initial_community_cards: List[str], num_simulations_per_process: int):
     """
     单个进程的模拟函数。
     """
-    player1_wins = 0
-    player2_wins = 0
+    num_players = len(player_hands)
+    player_wins = [0] * num_players
     ties = 0
 
-    all_known_cards = set(player1_hand + player2_hand + initial_community_cards)
+    all_known_cards_initial = set()
+    for hand in player_hands:
+        all_known_cards_initial.update(hand)
+    all_known_cards_initial.update(initial_community_cards)
 
     for _ in range(num_simulations_per_process):
         deck = create_deck()
         # 移除已知牌
-        for card in all_known_cards:
-            if card in deck:
-                deck.remove(card)
+        current_deck = [card for card in deck if card not in all_known_cards_initial]
 
         # 补充公共牌到5张
         remaining_community_cards_needed = 5 - len(initial_community_cards)
+        
+        simulated_community_cards = []
         if remaining_community_cards_needed > 0:
-            simulated_community_cards = random.sample(deck, remaining_community_cards_needed)
-        else:
-            simulated_community_cards = []
+            # 确保牌库足够抽取
+            if len(current_deck) < remaining_community_cards_needed:
+                # 这种情况不应该发生，除非输入牌面有误导致牌库不足
+                # 或者模拟次数过大，但这里是子进程，不应直接返回错误，而是返回0
+                return [0] * num_players, 0 # 返回零结果
+            simulated_community_cards = random.sample(current_deck, remaining_community_cards_needed)
 
         final_community_cards = initial_community_cards + simulated_community_cards
 
-        # 组合玩家手牌和公共牌
-        player1_total_cards = player1_hand + final_community_cards
-        player2_total_cards = player2_hand + final_community_cards
+        best_hand_ranks = []
+        for hand in player_hands:
+            total_cards = hand + final_community_cards
+            best_hand_ranks.append(get_best_5_card_hand(total_cards))
 
-        # 评估最佳牌型
-        player1_best_hand_rank = get_best_5_card_hand(player1_total_cards)
-        player2_best_hand_rank = get_best_5_card_hand(player2_total_cards)
+        # 比较所有玩家的牌型
+        max_rank = (0,)
+        for rank in best_hand_ranks:
+            if rank > max_rank:
+                max_rank = rank
+        
+        winners = [i for i, rank in enumerate(best_hand_ranks) if rank == max_rank]
 
-        # 比较胜负
-        if player1_best_hand_rank > player2_best_hand_rank:
-            player1_wins += 1
-        elif player2_best_hand_rank > player1_best_hand_rank:
-            player2_wins += 1
+        if len(winners) == 1:
+            player_wins[winners[0]] += 1
         else:
             ties += 1
     
-    return player1_wins, player2_wins, ties
+    return player_wins, ties
 
-def calculate_odds_core(player1_hand_str: str, player2_hand_str: str, community_cards_str: Optional[str] = None, num_simulations: int = 10000):
+def calculate_odds_core(player_hands_str: List[str], community_cards_str: Optional[str] = None, num_simulations: int = 10000):
     """
     核心计算函数，不直接作为MCP工具，方便多进程调用。
     """
     try:
-        player1_hand = parse_card_string(player1_hand_str)
-        player2_hand = parse_card_string(player2_hand_str)
+        player_hands = []
+        for hand_str in player_hands_str:
+            hand = parse_card_string(hand_str)
+            if len(hand) != 2:
+                raise ValueError(f"每手牌必须包含2张牌。无效手牌: {hand_str}")
+            player_hands.append(hand)
         
-        if len(player1_hand) != 2 or len(player2_hand) != 2:
-            raise ValueError("每手牌必须包含2张牌。")
-        
+        if not (2 <= len(player_hands) <= 9): # 德州扑克通常2-9人
+            raise ValueError("玩家数量必须在2到9之间。")
+
         initial_community_cards = []
         if community_cards_str:
             initial_community_cards = parse_card_string(community_cards_str)
             if not (3 <= len(initial_community_cards) <= 4):
                 raise ValueError("公共牌必须是3张（翻牌）或4张（转牌）。")
 
-        all_known_cards = set(player1_hand + player2_hand + initial_community_cards)
-        if len(all_known_cards) != len(player1_hand) + len(player2_hand) + len(initial_community_cards):
+        all_known_cards = set()
+        for hand in player_hands:
+            all_known_cards.update(hand)
+        all_known_cards.update(initial_community_cards)
+
+        if len(all_known_cards) != sum(len(hand) for hand in player_hands) + len(initial_community_cards):
             raise ValueError("手牌和公共牌中存在重复的牌。")
 
     except ValueError as e:
         return {"error": str(e)}
 
     # 确定使用的进程数
-    num_processes = os.cpu_count() or 1 # 获取CPU核心数，如果获取不到则默认为1
+    num_processes = os.cpu_count() or 1
     if num_simulations < num_processes:
-        num_processes = 1 # 如果模拟次数小于核心数，则只用一个进程
+        num_processes = 1
 
-    # 计算每个进程需要执行的模拟次数
     num_simulations_per_process = num_simulations // num_processes
     remaining_simulations = num_simulations % num_processes
 
-    total_player1_wins = 0
-    total_player2_wins = 0
+    total_player_wins = [0] * len(player_hands)
     total_ties = 0
 
-    # 使用 multiprocessing.Pool 进行并行计算
     with multiprocessing.Pool(processes=num_processes) as pool:
         results = []
         for i in range(num_processes):
             sims_for_this_process = num_simulations_per_process
-            if i < remaining_simulations: # 将余数分配给前几个进程
+            if i < remaining_simulations:
                 sims_for_this_process += 1
             
             if sims_for_this_process > 0:
-                results.append(pool.apply_async(_simulate_single_process, (player1_hand, player2_hand, initial_community_cards, sims_for_this_process)))
+                results.append(pool.apply_async(_simulate_single_process, (player_hands, initial_community_cards, sims_for_this_process)))
         
         for res in results:
-            p1_wins, p2_wins, ties_count = res.get()
-            total_player1_wins += p1_wins
-            total_player2_wins += p2_wins
+            p_wins, ties_count = res.get()
+            for i in range(len(player_hands)):
+                total_player_wins[i] += p_wins[i]
             total_ties += ties_count
 
-    total_results = total_player1_wins + total_player2_wins + total_ties
-    if total_results == 0: # 避免除以零
+    total_results = sum(total_player_wins) + total_ties
+    if total_results == 0:
         return {"error": "模拟次数为0，无法计算概率。"}
 
-    player1_win_percentage = (total_player1_wins / total_results) * 100
-    player2_win_percentage = (total_player2_wins / total_results) * 100
-    tie_percentage = (total_ties / total_results) * 100
-
-    return {
-        "player1_hand": player1_hand_str,
-        "player2_hand": player2_hand_str,
+    output_results = {
+        "num_players": len(player_hands),
         "community_cards": community_cards_str if community_cards_str else "None",
         "num_simulations": num_simulations,
-        "player1_win_percentage": f"{player1_win_percentage:.2f}%",
-        "player2_win_percentage": f"{player2_win_percentage:.2f}%",
-        "tie_percentage": f"{tie_percentage:.2f}%"
+        "player_odds": []
     }
+
+    for i, hand_str in enumerate(player_hands_str):
+        win_percentage = (total_player_wins[i] / total_results) * 100
+        output_results["player_odds"].append({
+            f"player{i+1}_hand": hand_str,
+            f"player{i+1}_win_percentage": f"{win_percentage:.2f}%"
+        })
+    
+    tie_percentage = (total_ties / total_results) * 100
+    output_results["tie_percentage"] = f"{tie_percentage:.2f}%"
+
+    return output_results
 
 # 创建 MCP 服务器实例
 mcp = FastMCP("texas-poker-odds-generator")
 
 # 定义 calculate_poker_odds 工具
 @mcp.tool(
-    description="计算德州扑克两手牌在给定公共牌（可选）情况下的胜负平概率。模拟次数越多，结果越精确。"
+    description="计算德州扑克多手牌在给定公共牌（可选）情况下的胜负平概率。模拟次数越多，结果越精确。"
 )
 def calculate_poker_odds(
-    player1_hand: Annotated[str, Field(description="玩家1的两张手牌，例如 'AsKd' (A黑桃, K方块)。牌面: 2-9, T(10), J, Q, K, A。花色: h(红心), d(方块), s(黑桃), c(梅花)。")],
-    player2_hand: Annotated[str, Field(description="玩家2的两张手牌，例如 '7c8h' (7梅花, 8红心)。格式同玩家1手牌。")],
+    player_hands: Annotated[List[str], Field(description="一个包含所有玩家手牌字符串的列表。每手牌由两张牌组成，例如 ['AsKd', '7c8h']。牌面: 2-9, T(10), J, Q, K, A。花色: h(红心), d(方块), s(黑桃), c(梅花)。支持2到9个玩家。")],
     community_cards: Annotated[Optional[str], Field(None, description="可选的公共牌。可以是3张（翻牌，例如 '2h3d4s'）或4张（转牌，例如 '2h3d4s5c'）。")] = None,
     num_simulations: Annotated[int, Field(10000, description="模拟次数。默认为10000次，建议至少10000次以获得较准确结果。", ge=100)] = 10000
 ) -> Dict[str, Any]:
     """
-    计算德州扑克两手牌的胜负平概率。
+    计算德州扑克多手牌的胜负平概率。
     """
-    return calculate_odds_core(player1_hand, player2_hand, community_cards, num_simulations)
+    return calculate_odds_core(player_hands, community_cards, num_simulations)
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
