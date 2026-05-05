@@ -12,6 +12,14 @@ This project provides a tool to calculate the win, loss, and tie probabilities f
 
 ## How to Use
 
+### Quick Start (uvx one-liner)
+
+You can run this MCP server directly from the git repository without cloning:
+
+```bash
+uvx --from git+https://github.com/ptbsare/texas-pokker-odds-mcp-server.git texas-pokker-odds-mcp-server
+```
+
 ### 1. Environment Setup
 
 Ensure your system has Python 3.10 or higher installed.
@@ -43,43 +51,30 @@ Once the server starts, it will listen for MCP client requests.
 
 Below is an example `mcp_server.json` configuration file to connect this MCP server to Claude:
 
+**Using uvx (recommended):**
+
 ```json
 {
   "mcp_servers": [
     {
       "name": "texas-poker-odds-generator",
       "type": "stdio",
-      "command": ["uv", "--directory", "/space/texas-pokker-odds-mcp-server/", "run", "server.py"],
-      "tools": [
-        {
-          "name": "calculate_poker_odds",
-          "description": "计算德州扑克多手牌在给定公共牌（可选）情况下的胜负平概率。模拟次数越多，结果越精确。",
-          "input_schema": {
-            "type": "object",
-            "properties": {
-              "player_hands": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "一个包含所有玩家手牌字符串的列表。每手牌由两张牌组成，例如 ['AsKd', '7c8h']。牌面: 2-9, T(10), J, Q, K, A。花色: h(红心), d(方块), s(黑桃), c(梅花)。支持2到9个玩家。"
-              },
-              "community_cards": {
-                "type": "string",
-                "description": "可选的公共牌。可以是3张（翻牌，例如 '2h3d4s'）或4张（转牌，例如 '2h3d4s5c'）。",
-                "nullable": true
-              },
-              "num_simulations": {
-                "type": "integer",
-                "description": "模拟次数。默认为10000次，建议至少10000次以获得较准确结果。",
-                "default": 10000,
-                "minimum": 100
-              }
-            },
-            "required": ["player_hands"]
-          }
-        }
-      ]
+      "command": ["uvx", "--from", "git+https://github.com/ptbsare/texas-pokker-odds-mcp-server.git", "texas-pokker-odds-mcp-server"]
     }
   ]
 }
+```
+
+**Using local path:**
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "texas-poker-odds-generator",
+      "type": "stdio",
+      "command": ["uv", "--directory", "/path/to/texas-pokker-odds-mcp-server/", "run", "server.py"]
+    }
+  ]
+}
+```
