@@ -269,6 +269,10 @@ def calculate_poker_odds(
     return calculate_odds_core(player_hands, community_cards, num_simulations)
 
 if __name__ == "__main__":
+    main()
+
+
+def main():
     multiprocessing.set_start_method('spawn', force=True)
     multiprocessing.freeze_support()
     mcp.run(transport='stdio')
