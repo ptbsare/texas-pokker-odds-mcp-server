@@ -6,7 +6,7 @@ authors = [
     { name = "ptbsare", email = "496725701@qq.com" }
 ]
 dependencies = [
-    "mcp",
+    "mcp>=1.0.0,<2.0.0",
     "pydantic",
 ]
 requires-python = ">=3.10"
